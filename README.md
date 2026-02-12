@@ -26,20 +26,7 @@ This project is ideal for financial analysts, developers, and researchers lookin
 
 ---
 
-## 🚀 Live Demo (Beta)
-
-✅ **LIVE & RUNNING:** [multi-agent-ai-finance-assistant.streamlit.app](https://multi-agents-finance-assistant.streamlit.app)
-
-The application is now **fully deployed** with:
-- ✅ Streamlit frontend running smoothly
-- ✅ FastAPI backend operational and synchronized
-- ✅ Real-time market data integration
-- ✅ AI-powered analysis with Google Gemini
-- ✅ Interactive charts and visualizations
-
----
-
-## 📋 Recent Updates (v2.0.0)
+## 📋 Recent Updates
 
 **✨ Major improvements:**
 - Fixed dependency conflicts (matplotlib, google-generativeai added)
@@ -313,7 +300,7 @@ docker run -p 8501:8501 -p 8000:8000 --env-file .env finance-assistant
 
 ## ✅ Deployment Status
 
-### ✨ Latest Status (v2.0.0 - November 23, 2025)
+### ✨ Latest Status (November 23, 2025)
 
 **✅ PRODUCTION READY**
 
@@ -348,7 +335,7 @@ When running on **Streamlit Cloud, Render, or similar free tier services**, you 
 
 **👉 For best results: Clone and run locally following the [Installation](#installation) section**
 
-### Recent Fixes (v2.0.0)
+### Recent Fixes
 - ✅ Added missing `matplotlib` and `google-generativeai` dependencies
 - ✅ Fixed protobuf version conflicts with streamlit and other packages
 - ✅ Resolved unsafe float conversions in comparison metrics
@@ -367,25 +354,3 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Yahoo Finance for providing real-time market data
-- Google Gemini for powerful AI capabilities
-- LangChain for RAG implementation framework
-- Streamlit for the beautiful UI framework
-- FastAPI for the high-performance backend
-
-## 📧 Contact
-
-For questions or feedback, reach out to Vansh at vansh.sethi98760@gmail.com or open an issue on GitHub.
-
----
-
-**⭐ If you find this project helpful, please consider giving it a star on GitHub!**
-      
-     
