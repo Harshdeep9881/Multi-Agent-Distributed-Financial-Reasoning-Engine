@@ -129,6 +129,17 @@ except Exception:
 st.sidebar.text(f"API: {API_URL}")
 
 st.title("🧠 Morning Market Brief Assistant")
+st.markdown(
+    """
+    <style>
+    button[data-baseweb="tab"] > div[data-testid="stMarkdownContainer"] > p {
+        font-size: 1.15rem;
+        font-weight: 700;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 st.markdown("""
 **Professional market insights powered by AI - covering 460+ global stocks!**
 
@@ -242,6 +253,14 @@ st.sidebar.markdown("---")
 st.sidebar.info(f"📊 Total available stocks: {len(ALL_STOCKS)}")
 st.sidebar.caption("248 US | 49 Asian | 40 European | 98 ETFs | 20 Crypto")
 
+portfolio_value = st.sidebar.number_input(
+    "💰 Portfolio Value (USD)",
+    min_value=0.0,
+    value=150000.0,
+    step=1000.0,
+    help="Used as context for portfolio-level analysis outputs.",
+)
+
 # Quick reference guide
 with st.sidebar.expander("📖 Symbol Format Guide"):
     st.markdown("""
@@ -294,11 +313,15 @@ query_templates = {
     "🎤 Ask by Voice": "Prepare analysis for a voice query on the selected symbols.",
 }
 
-st.markdown("### 3. Build Your Question")
-with st.expander("Quick starters"):
+st.markdown("### 3. Ask Your Question")
+st.caption("Pick a template or type your own question in plain English.")
+
+with st.expander("✨ Quick Start Templates"):
     example_keys = ["None"] + list(query_templates.keys())
-    chosen = st.selectbox("Prefill query from mode", example_keys)
-    if st.button("Apply Starter", use_container_width=True):
+    chosen = st.selectbox("Choose a template (optional)", example_keys)
+    if chosen != "None":
+        st.info(f"Template preview: {query_templates[chosen]}")
+    if st.button("Use Template", use_container_width=True):
         if chosen != "None":
             st.session_state["query_input"] = query_templates[chosen]
 
@@ -306,26 +329,13 @@ default_query = stock_query if stock_query else "What's our risk exposure in tec
 if "query_input" not in st.session_state:
     st.session_state["query_input"] = default_query
 
+st.markdown("#### What do you want to know about the selected assets?")
 query = st.text_input(
-    "Enter your market analysis question:",
+    "What do you want to know about the selected assets?",
     key="query_input",
-    help="Ask about specific stocks, market trends, or portfolio risk",
+    help="Example: Give me a concise market brief for these symbols.",
+    label_visibility="collapsed",
 )
-
-with st.expander("What this run will execute"):
-    st.markdown(
-        """
-        - Backend health check
-        - Retrieval pipeline: market data + news context + retriever
-        - Analysis pipeline: risk exposure + earnings + language summary
-        - Capability checks: optional earnings endpoint and local prediction modules
-        """
-    )
-    if PREDICTION_FEATURES_AVAILABLE:
-        st.success("UI prediction/graph modules are available.")
-    else:
-        st.warning("Prediction/graph modules are unavailable in this build. Core analysis still works.")
-
 
 PROGRESS_STEPS = [
     ("fetch", "🔄 Fetching Market Data (Yahoo Finance)"),
@@ -364,7 +374,15 @@ if st.button("Run Analysis", type="primary"):
                 st.error(f"FastAPI server not reachable: {health_check.status_code} - {health_check.text}")
             else:
                 st.success("Backend is healthy. Running pipeline...")
-                params = {"query": query}
+                portfolio_context = f"Portfolio total value (user-entered): ${portfolio_value:,.2f}."
+                reporting_context = (
+                    "Format the response with clear sections: "
+                    "Portfolio Overview, Position Details, Market Context, Risk Assessment, and Recommendations. "
+                    "Use markdown tables where appropriate. "
+                    "When weights are unknown, assume equal-weight across selected symbols and keep position math internally consistent."
+                )
+                enriched_query = f"{query}\n{portfolio_context}\n{reporting_context}"
+                params = {"query": enriched_query}
                 if selected_symbols:
                     params["symbols"] = ",".join(selected_symbols)
 
@@ -424,12 +442,18 @@ if st.button("Run Analysis", type="primary"):
                                     for ctx in contexts
                                 )
                                 dummy_summary = ("2023" in summary and "2024" in summary and "10.5" in summary)
+                                generic_context_count = sum(
+                                    1
+                                    for ctx in contexts
+                                    if "market update" in str(ctx).lower() and "market activity for" in str(ctx).lower()
+                                )
+                                generic_context_ratio = (generic_context_count / len(contexts)) if contexts else 0
 
                                 context_text = " ".join([str(ctx).lower() for ctx in contexts])
                                 cached_context = "cache" in context_text or "cached" in context_text
                                 if cached_context:
                                     quality_state = "cached"
-                                elif fallback_context or dummy_summary:
+                                elif fallback_context or dummy_summary or generic_context_ratio >= 0.5:
                                     quality_state = "fallback"
                                 else:
                                     quality_state = "live"
@@ -465,6 +489,45 @@ if st.button("Run Analysis", type="primary"):
                                     "cached": "Cached",
                                 }[quality_state]
 
+                                position_rows = []
+                                positioned_symbols = []
+                                for sym in symbols:
+                                    records = markets.get(sym, [])
+                                    if isinstance(records, list) and records:
+                                        positioned_symbols.append(sym)
+                                allocation_count = len(positioned_symbols) if positioned_symbols else len(symbols)
+                                equal_weight_pct = (100.0 / allocation_count) if allocation_count > 0 else 0.0
+                                for sym in symbols:
+                                    records = markets.get(sym, [])
+                                    latest_close = None
+                                    if isinstance(records, list) and records:
+                                        df = pd.DataFrame(records)
+                                        if "Close" in df.columns:
+                                            close_series = pd.to_numeric(df["Close"], errors="coerce").dropna()
+                                            if len(close_series) > 0:
+                                                latest_close = float(close_series.iloc[-1])
+
+                                    weight_pct = equal_weight_pct if allocation_count > 0 else 0.0
+                                    position_value = portfolio_value * (weight_pct / 100.0)
+                                    estimated_shares = (position_value / latest_close) if latest_close and latest_close > 0 else None
+                                    position_rows.append(
+                                        {
+                                            "Symbol": sym,
+                                            "Weight % (equal-weight)": f"{weight_pct:.2f}%",
+                                            "Position Value (USD)": f"${position_value:,.2f}",
+                                            "Latest Close": f"{latest_close:,.2f}" if latest_close is not None else "N/A",
+                                            "Estimated Shares": f"{estimated_shares:,.2f}" if estimated_shares is not None else "N/A",
+                                        }
+                                    )
+
+                                max_weight = equal_weight_pct if allocation_count > 0 else 0.0
+                                if max_weight >= 40:
+                                    concentration_label = "High concentration"
+                                elif max_weight >= 20:
+                                    concentration_label = "Moderate concentration"
+                                else:
+                                    concentration_label = "Diversified"
+
                                 st.subheader("Results Overview")
                                 c1, c2 = st.columns(2)
                                 c1.metric("Symbols Analyzed", len(symbols))
@@ -476,6 +539,12 @@ if st.button("Run Analysis", type="primary"):
                                 m2.metric("Data Freshness", freshness_label)
                                 m3.metric("News Coverage", f"{news_coverage} articles analyzed")
 
+                                with st.expander("🧠 How AI Generated This Report"):
+                                    st.markdown("- Market data fetched via Yahoo Finance")
+                                    st.markdown(f"- {news_coverage} news articles retrieved")
+                                    st.markdown("- Risk exposure calculated via statistical weights")
+                                    st.markdown("- Gemini generated executive summary")
+
                                 if agents_used:
                                     st.markdown("#### 🧠 Agents Used")
                                     display_name_map = {
@@ -486,61 +555,114 @@ if st.button("Run Analysis", type="primary"):
                                         "Analysis Agent": "Risk Analysis Agent",
                                         "Language Agent": "Language Agent",
                                     }
+                                    expected_agents = {
+                                        "Market Data Agent",
+                                        "News Agent",
+                                        "Context Retriever Agent",
+                                        "Risk Analysis Agent",
+                                        "Earnings Agent",
+                                        "Language Agent",
+                                    }
+                                    reported_agents = set()
+                                    agent_rows = []
+                                    failed_agents = []
                                     for agent in agents_used:
                                         raw_name = agent.get("name", "Unknown Agent")
                                         display_name = display_name_map.get(raw_name, raw_name)
+                                        reported_agents.add(display_name)
                                         status = agent.get("status", "success")
                                         time_ms = agent.get("time_ms")
                                         if status in ("success", "cache_hit"):
                                             icon = "✓"
-                                            suffix = " (Cached)" if status == "cache_hit" else ""
+                                            status_label = "Cached" if status == "cache_hit" else "Success"
                                         elif status == "fallback_used":
-                                            icon = "⚠"
-                                            suffix = " (Fallback Mode)"
+                                            icon = "!"
+                                            status_label = "Fallback Mode"
                                         else:
-                                            icon = "✗"
-                                            suffix = " (Failed)"
-                                        if time_ms is not None:
-                                            st.write(f"{icon} {display_name}{suffix} - {time_ms} ms")
+                                            icon = "x"
+                                            status_label = "Failed"
+                                            failed_agents.append(display_name)
+                                        if time_ms is None:
+                                            time_label = "N/A"
+                                        elif time_ms == 0:
+                                            time_label = "0 ms (not reported)"
                                         else:
-                                            st.write(f"{icon} {display_name}{suffix}")
+                                            time_label = f"{time_ms} ms"
+                                        agent_rows.append(
+                                            {
+                                                "Agent": display_name,
+                                                "State": f"{icon} {status_label}",
+                                                "Time": time_label,
+                                            }
+                                        )
+
+                                    if agent_rows:
+                                        st.dataframe(pd.DataFrame(agent_rows), use_container_width=True)
+
+                                    missing_agents = sorted(list(expected_agents - reported_agents))
+                                    if missing_agents:
+                                        st.warning(f"Missing expected agents in response: {', '.join(missing_agents)}")
+                                    if failed_agents:
+                                        st.error(f"One or more agents failed: {', '.join(failed_agents)}")
 
                                 if timing_breakdown_ms:
                                     total_ms = timing_breakdown_ms.get(
                                         "total_response_time_end_to_end",
                                         timing_breakdown_ms.get("total_response_time"),
                                     )
-                                    market_ms = timing_breakdown_ms.get("market_data", 0)
-                                    news_ms = timing_breakdown_ms.get("news", 0)
-                                    ai_analysis_ms = (
-                                        timing_breakdown_ms.get("risk_analysis", 0)
-                                        + timing_breakdown_ms.get("language", 0)
-                                        + timing_breakdown_ms.get("earnings", 0)
-                                    )
+                                    market_ms = timing_breakdown_ms.get("market_data")
+                                    news_ms = timing_breakdown_ms.get("news")
+                                    risk_ms = timing_breakdown_ms.get("risk_analysis")
+                                    language_ms = timing_breakdown_ms.get("language")
+                                    earnings_ms = timing_breakdown_ms.get("earnings")
+                                    ai_parts = [x for x in [risk_ms, language_ms, earnings_ms] if x is not None]
+                                    ai_analysis_ms = sum(ai_parts) if ai_parts else None
                                     st.markdown("#### ⏱️ Execution Timing")
-                                    if total_ms is None:
-                                        total_ms = market_ms + news_ms + ai_analysis_ms
+                                    if total_ms is None and any(x is not None for x in [market_ms, news_ms, ai_analysis_ms]):
+                                        total_ms = (market_ms or 0) + (news_ms or 0) + (ai_analysis_ms or 0)
+
+                                    def to_seconds_label(ms):
+                                        if ms is None:
+                                            return "N/A"
+                                        return f"{(ms / 1000):.1f}s"
+
                                     t1, t2, t3, t4 = st.columns(4)
-                                    t1.metric("Total Response Time", f"{(total_ms / 1000):.1f}s")
-                                    t2.metric("Market Data", f"{(market_ms / 1000):.1f}s")
-                                    t3.metric("News", f"{(news_ms / 1000):.1f}s")
-                                    t4.metric("AI Analysis", f"{(ai_analysis_ms / 1000):.1f}s")
+                                    t1.metric("Total Response Time", to_seconds_label(total_ms))
+                                    t2.metric("Market Data", to_seconds_label(market_ms))
+                                    t3.metric("News", to_seconds_label(news_ms))
+                                    t4.metric("AI Analysis", to_seconds_label(ai_analysis_ms))
 
                                 result_tabs = st.tabs(
                                     ["📊 Summary", "⚠️ Risk", "📰 News", "📈 Charts", "🔮 Forecast"]
                                 )
+                                st.caption("Informational output only. This is a forecast-oriented analysis, not an investment decision or recommendation.")
 
                                 with result_tabs[0]:
                                     st.markdown("#### Executive Snapshot")
+                                    st.caption("Summary generated from current retrieved data and model output.")
+                                    st.markdown("##### Report Context")
+                                    st.write(f"- Query: {query}")
+                                    st.write(f"- Portfolio value (user-entered): ${portfolio_value:,.2f}")
+                                    st.write(f"- Symbols: {', '.join(symbols) if symbols else 'N/A'}")
+                                    st.write(f"- Data freshness: {freshness_label}")
+                                    st.write(f"- News coverage: {news_coverage} evidence items")
+                                    st.write(f"- Concentration profile: {concentration_label}")
+                                    if position_rows:
+                                        st.markdown("##### Portfolio Position Details (Deterministic)")
+                                        st.caption("This table is computed directly from selected symbols and entered portfolio value.")
+                                        st.dataframe(pd.DataFrame(position_rows), use_container_width=True)
                                     summary_lines = [ln.strip() for ln in summary.splitlines() if ln.strip()]
                                     top_lines = summary_lines[:5] if summary_lines else ["No summary text generated."]
                                     for line in top_lines:
                                         st.write(f"- {line}")
+                                    st.info("If narrative weights conflict with the table above, use the deterministic table as the source of truth.")
                                     st.markdown("#### Full Brief")
                                     st.markdown(summary)
 
                                 with result_tabs[1]:
-                                    st.markdown("#### Position Metrics from Retrieved Market Data")
+                                    st.markdown("#### 📊 Risk Analysis (Analysis Agent)")
+                                    st.caption("Risk metrics are descriptive diagnostics, not portfolio actions.")
+                                    st.markdown("##### Position Metrics from Retrieved Market Data")
                                     if not markets:
                                         st.info("No market data available.")
                                     else:
@@ -550,16 +672,34 @@ if st.button("Run Analysis", type="primary"):
                                                 df = pd.DataFrame(records)
                                                 latest_close = df["Close"].iloc[-1] if "Close" in df.columns else None
                                                 avg_volume = df["Volume"].mean() if "Volume" in df.columns else None
+                                                period_return = None
+                                                volatility = None
+                                                if "Close" in df.columns and len(df["Close"]) > 1:
+                                                    close_series = pd.to_numeric(df["Close"], errors="coerce").dropna()
+                                                    if len(close_series) > 1 and close_series.iloc[0] != 0:
+                                                        period_return = ((close_series.iloc[-1] - close_series.iloc[0]) / close_series.iloc[0]) * 100
+                                                        daily_returns = close_series.pct_change().dropna()
+                                                        if len(daily_returns) > 1:
+                                                            volatility = daily_returns.std() * 100
                                                 risk_rows.append(
                                                     {
                                                         "Symbol": sym,
                                                         "Currency": currency_for_symbol(sym),
                                                         "Latest Close": f"{latest_close:,.2f}" if pd.notna(latest_close) else "N/A",
                                                         "Avg Volume": f"{avg_volume:,.0f}" if pd.notna(avg_volume) else "N/A",
+                                                        "Period Return %": f"{period_return:+.2f}%" if period_return is not None else "N/A",
+                                                        "Daily Volatility %": f"{volatility:.2f}%" if volatility is not None else "N/A",
                                                     }
                                                 )
                                         if risk_rows:
-                                            st.dataframe(pd.DataFrame(risk_rows), use_container_width=True)
+                                            risk_df = pd.DataFrame(risk_rows)
+                                            st.dataframe(risk_df, use_container_width=True)
+                                            st.markdown("##### Risk Notes")
+                                            st.write("- `Period Return %` compares the first and latest close in the retrieved window.")
+                                            st.write("- `Daily Volatility %` is the standard deviation of daily returns in the same window.")
+                                            st.write(f"- Portfolio concentration: `{concentration_label}` (max single-name weight `{max_weight:.2f}%`).")
+                                            if len(symbols) == 1:
+                                                st.info("Single symbol selected, so 100% concentration is expected for this run.")
                                         else:
                                             st.info("Could not parse market records for risk table.")
                                     if fallback_context:
@@ -568,15 +708,29 @@ if st.button("Run Analysis", type="primary"):
                                         st.warning("Fallback dummy earnings defaults were detected in the brief.")
 
                                 with result_tabs[2]:
-                                    st.markdown("#### News and Retrieved Context")
+                                    st.markdown("#### 📰 News Summary (Retriever + Language Agent)")
+                                    st.caption("News/context items are evidence inputs used by the forecast pipeline.")
                                     if not contexts:
                                         st.info("No context documents returned.")
                                     else:
+                                        unique_context_count = len({str(ctx).strip() for ctx in contexts})
+                                        duplicate_count = len(contexts) - unique_context_count
+                                        st.markdown("##### Coverage Details")
+                                        st.write(f"- Total context/news items analyzed: {len(contexts)}")
+                                        st.write(f"- Unique items: {unique_context_count}")
+                                        if duplicate_count > 0:
+                                            st.write(f"- Duplicate items: {duplicate_count}")
+                                        st.write("- Items below are direct retrieval outputs used for synthesis.")
+                                        if generic_context_ratio >= 0.5:
+                                            st.warning("Most context items look generic or repeated. News quality appears degraded for this query.")
                                         for i, ctx in enumerate(contexts, 1):
-                                            st.markdown(f"**Item {i}:** {ctx}")
+                                            text = str(ctx)
+                                            preview = text[:320] + "..." if len(text) > 320 else text
+                                            st.markdown(f"**Item {i}:** {preview}")
 
                                 with result_tabs[3]:
                                     st.markdown("#### Price Charts")
+                                    st.caption("Charts show historical/observed prices; they do not imply a decision.")
                                     if not markets:
                                         st.info("No market data available for charting.")
                                     else:
@@ -587,12 +741,21 @@ if st.button("Run Analysis", type="primary"):
                                             chart_symbol = st.selectbox("Select symbol for chart", chart_symbols)
                                             chart_df = pd.DataFrame(markets[chart_symbol])
                                             if "Close" in chart_df.columns:
-                                                st.line_chart(chart_df[["Close"]], use_container_width=True)
+                                                chart_df["Close"] = pd.to_numeric(chart_df["Close"], errors="coerce")
+                                                chart_df = chart_df.dropna(subset=["Close"]).reset_index(drop=True)
+                                                if len(chart_df) > 0:
+                                                    chart_df["MA_5"] = chart_df["Close"].rolling(5).mean()
+                                                    chart_df["MA_20"] = chart_df["Close"].rolling(20).mean()
+                                                    st.line_chart(chart_df[["Close", "MA_5", "MA_20"]], use_container_width=True)
+                                                    st.write(f"Showing `{chart_symbol}` with 5-period and 20-period moving averages.")
+                                                else:
+                                                    st.info("No valid close-price values available for charting.")
                                             else:
                                                 st.info("Close price series unavailable for this symbol.")
 
                                 with result_tabs[4]:
-                                    st.markdown("#### Forecast Outlook")
+                                    st.markdown("#### 🔮 Earnings Forecast (Prediction Agent)")
+                                    st.caption("Forecast signals are probabilistic and should not be treated as decisions.")
                                     if not markets:
                                         st.info("Insufficient market data for a directional forecast.")
                                     else:
@@ -606,21 +769,31 @@ if st.button("Run Analysis", type="primary"):
                                                     if pd.notna(first_close) and first_close != 0 and pd.notna(last_close):
                                                         change_pct = ((last_close - first_close) / first_close) * 100
                                                         bias = "Bullish" if change_pct > 1 else "Bearish" if change_pct < -1 else "Neutral"
+                                                        confidence_band = "Medium"
+                                                        if abs(change_pct) >= 8:
+                                                            confidence_band = "High"
+                                                        elif abs(change_pct) <= 2:
+                                                            confidence_band = "Low"
                                                         forecast_rows.append(
                                                             {
                                                                 "Symbol": sym,
                                                                 "Trend (period)": f"{change_pct:+.2f}%",
-                                                                "Outlook Bias": bias,
+                                                                "Forecast Signal": bias,
+                                                                "Signal Confidence": confidence_band,
+                                                                "Description": f"Trend-based signal from observed close-price direction for {sym}.",
                                                             }
                                                         )
                                         if forecast_rows:
                                             st.dataframe(pd.DataFrame(forecast_rows), use_container_width=True)
+                                            st.markdown("##### Forecast Interpretation")
+                                            st.write("- `Forecast Signal` reflects observed trend direction in the retrieved period.")
+                                            st.write("- `Signal Confidence` is a simple magnitude-based band, not a probability guarantee.")
                                         else:
                                             st.info("Not enough close-price history to estimate a forecast trend.")
                                     if PREDICTION_FEATURES_AVAILABLE:
                                         st.caption("Advanced prediction modules are available in this environment.")
                                     else:
-                                        st.caption("Advanced prediction modules are disabled in this build.")
+                                        st.warning("Advanced prediction modules are disabled in this build. Forecast output is baseline trend-based only.")
 
                                 developer_mode = st.toggle("🔍 Developer Mode (Advanced Users)", value=False)
                                 if developer_mode:
